@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 #
 # AIHub CLI Main Module
-# Command-line interface for AIHub dataset operations
+# Command-line interface for AIHub dataset and data package operations
 #
-# - Provides download, list, and help functionality
-# - Uses API key authentication instead of username/password
-# - Modern subcommand interface for better user experience
+# - Provides download, list, and help functionality for datasets and data packages
+# - Uses API key authentication via POST /api/keyValidate.do
+# - Version pinning to detect silent AIHub API updates
 #
 # @author Jung-In An <ji5489@gmail.com>
-# @with Claude Sonnet 4 (Cutoff 2025/06/16)
 
 import argparse
+import json
 import os
 import re
 import sys
 import tarfile
 from typing import Any, Dict
 
+from ..core.api_version import check_api_version
 from ..core.auth import AIHubAuth
 from ..core.config import AIHubConfig
 from ..core.downloader import AIHubDownloader, DownloadStatus
@@ -34,6 +35,9 @@ Examples:
   %(prog)s files DATASET_KEY                       # List files in a dataset
   %(prog)s download DATASET_KEY                    # Download all files in a dataset
   %(prog)s download DATASET_KEY --file-key 1,2,3   # Download specific files
+  %(prog)s package-list                            # List all data packages
+  %(prog)s package-files PACKAGE_KEY               # List files in a data package
+  %(prog)s package-download PACKAGE_KEY            # Download a data package
   %(prog)s help                                    # Show API usage information
         """
     )
@@ -48,6 +52,11 @@ Examples:
         default=".",
         help="Output directory for downloads (default: current directory)"
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Bypass API version check (use if aihubkr-dl reports a version mismatch)"
+    )
 
     # Subcommands
     subparsers = parser.add_subparsers(
@@ -57,7 +66,7 @@ Examples:
     )
 
     # List command
-    list_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "list",
         help="List all available datasets",
         description="List all available datasets and export to CSV"
@@ -95,8 +104,42 @@ Examples:
         help="Check available disk space before downloading"
     )
 
+    # Package list command
+    subparsers.add_parser(
+        "package-list",
+        help="List all available data packages",
+        description="List all available data packages"
+    )
+
+    # Package files command
+    package_files_parser = subparsers.add_parser(
+        "package-files",
+        help="List files in a data package",
+        description="Show file tree structure and sizes for a data package"
+    )
+    package_files_parser.add_argument(
+        "package_key",
+        help="Data package key to list files for"
+    )
+
+    # Package download command
+    package_download_parser = subparsers.add_parser(
+        "package-download",
+        help="Download a data package",
+        description="Download data package files with progress tracking"
+    )
+    package_download_parser.add_argument(
+        "package_key",
+        help="Data package key to download"
+    )
+    package_download_parser.add_argument(
+        "--file-key",
+        default="all",
+        help="File key(s) to download, comma-separated (default: all files)"
+    )
+
     # Help command
-    help_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "help",
         help="Show API usage information",
         description="Display AIHub API usage information"
@@ -111,18 +154,41 @@ Examples:
 
 
 def print_usage() -> None:
-    """Print usage information from AIHub API."""
+    """Print usage information from AIHub API.
+
+    Note: The API returns non-standard JSON (unquoted datetime values),
+    so we use regex extraction rather than json.loads().
+    """
     import requests
 
     manual_url = "https://api.aihub.or.kr/info/api.do"
     try:
-        manual = requests.get(manual_url).text
-        print("AIHub API Usage Information:")
-        print("=" * 50)
+        response = requests.get(manual_url, timeout=15)
+        text = response.text
 
-        # Extract and display usage information
-        # This is a simplified version - you can enhance parsing as needed
-        print(manual)
+        # Extract command entries using regex (API returns non-standard JSON)
+        import re
+        entries = re.findall(
+            r'"ENGL_CMGG"\s*:\s*"([^"]*)".*?"KOREAN_CMGG"\s*:\s*"([^"]*)".*?"DETAIL_CN"\s*:\s*"([^"]*)"',
+            text,
+            re.DOTALL,
+        )
+
+        if not entries:
+            # Fallback: print raw
+            print(text)
+            return
+
+        print("\nAIHub API Usage Information")
+        print("=" * 60)
+        print(f"{'COMMAND':<15} {'OPTION':<20} DETAIL")
+        print("-" * 60)
+
+        for engl, korean, detail in entries:
+            detail = detail.replace("\\n", "\n").replace("\\t", "\t").replace("\\/", "/")
+            print(f"{engl:<15} {korean:<20} {detail}")
+            print()
+
     except Exception as e:
         print(f"Failed to fetch usage information: {e}")
         print("Please visit https://api.aihub.or.kr/info/api.do for detailed usage information.")
@@ -151,6 +217,24 @@ def list_datasets(downloader: AIHubDownloader) -> None:
         print("Failed to fetch dataset information.")
 
 
+def list_packages(downloader: AIHubDownloader) -> None:
+    """List all available data packages."""
+    print("Fetching data package list...")
+    packages = downloader.get_datapackage_info()
+    if packages:
+        table = PrettyTable(
+            field_names=["Package Key", "Package Name"],
+            align="l",
+        )
+
+        for pkg_id, pkg_name in packages:
+            table.add_row([pkg_id, pkg_name])
+
+        print(table)
+    else:
+        print("Failed to fetch data package information.")
+
+
 def list_file_tree(downloader: AIHubDownloader, dataset_key: str) -> None:
     """List file tree structure for a specific dataset."""
     print(f"Fetching file tree for dataset: {dataset_key}")
@@ -162,7 +246,25 @@ def list_file_tree(downloader: AIHubDownloader, dataset_key: str) -> None:
         print("No files found.")
         return
 
-    # Parse file tree
+    _print_file_tree_table(file_tree)
+
+
+def list_package_file_tree(downloader: AIHubDownloader, package_key: str) -> None:
+    """List file tree structure for a data package."""
+    print(f"Fetching file tree for data package: {package_key}")
+    file_tree, error_message = downloader.get_package_file_tree(package_key)
+    if error_message:
+        print(f"Error: {error_message}")
+        return
+    if not file_tree:
+        print("No files found.")
+        return
+
+    _print_file_tree_table(file_tree)
+
+
+def _print_file_tree_table(file_tree: str) -> None:
+    """Parse and print a file tree as a table."""
     parser = AIHubResponseParser()
     tree, paths = parser.parse_tree_output(file_tree)
     if not paths:
@@ -197,7 +299,10 @@ def download_dataset(
     print(f"Output directory: {output_dir}")
 
     # Check for available disk space before downloading
-    file_tree = downloader.get_file_tree(dataset_key)
+    file_tree, error_message = downloader.get_file_tree(dataset_key)
+    if error_message:
+        print(f"Error: {error_message}")
+        return
     if not file_tree:
         print(f"Failed to fetch file tree for dataset {dataset_key}")
         return
@@ -310,10 +415,17 @@ def main() -> None:
     try:
         args = parse_arguments()
 
-        # Handle help command
+        # Handle help command (no auth needed)
         if args["command"] == "help":
             print_usage()
             return
+
+        # Version check
+        force = args.get("force", False)
+        is_compatible, version_msg = check_api_version(force=force)
+        if not is_compatible:
+            print(f"ERROR: {version_msg}")
+            sys.exit(1)
 
         # Get API key
         api_key = args.get("api_key")
@@ -357,6 +469,17 @@ def main() -> None:
             file_keys = args.get("file_key", "all")
             output_dir = args.get("output_dir", ".")
             download_dataset(downloader, args["dataset_key"], file_keys, output_dir)
+        elif args["command"] == "package-list":
+            list_packages(downloader)
+        elif args["command"] == "package-files":
+            list_package_file_tree(downloader, args["package_key"])
+        elif args["command"] == "package-download":
+            file_keys = args.get("file_key", "all")
+            output_dir = args.get("output_dir", ".")
+            download_status = downloader.download_and_process_package(
+                args["package_key"], file_keys, output_dir
+            )
+            print(download_status.get_message())
         else:
             print("Invalid command. Use --help for usage information.")
     except Exception as e:

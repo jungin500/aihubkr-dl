@@ -88,6 +88,7 @@ markers = [
     "slow: Slow running tests",
     "auth: Authentication tests",
     "download: Download tests",
+    "live: Live API tests requiring AIHUB_TEST_API_KEY",
 ]
 
 [tool.coverage.run]

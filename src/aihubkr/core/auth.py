@@ -3,12 +3,10 @@
 # AIHub Authentication Module
 # Handles API key authentication for AIHub API
 #
-# - Replaces username/password authentication with API key authentication
-# - Validates API key with AIHub server
+# - Validates API key via POST /api/keyValidate.do (JSON response)
 # - Manages API key storage and retrieval
 #
 # @author Jung-In An <ji5489@gmail.com>
-# @with Claude Sonnet 4 (Cutoff 2025/06/16)
 
 from typing import Dict, Optional
 
@@ -20,8 +18,8 @@ class AIHubAuth:
     """Handles API key authentication for AIHub API."""
 
     BASE_URL = "https://api.aihub.or.kr"
-    KEY_VALIDATE_URL = f"{BASE_URL}/down/0.5/-1.do"
-    CREDENTIAL_VERSION = "2"
+    KEY_VALIDATE_URL = f"{BASE_URL}/api/keyValidate.do"
+    CREDENTIAL_VERSION = "3"
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -67,52 +65,27 @@ class AIHubAuth:
         return None
 
     def validate_api_key(self) -> bool:
-        """Validate API key with AIHub server."""
+        """Validate API key with AIHub server via POST /api/keyValidate.do.
+
+        Returns True if the server responds with {"msg":"login success","code":200}.
+        """
         if not self.api_key:
             return False
 
         try:
-            response = requests.get(
+            response = requests.post(
                 self.KEY_VALIDATE_URL,
                 headers={"apikey": self.api_key},
-                timeout=30  # Add 30 second timeout
+                timeout=30,
             )
 
-            # We don't trust the KEY_VALIDATE_URL's response code.
-            # It's always 502 Bad gateway!
+            data = response.json()
+            return data.get("code") == 200
 
-            response_body = response.text.strip()
-            # Based on real API behavior, we need more specific patterns
-            # The API key validation endpoint always returns 502 with specific messages
-            # "요청하신 데이터셋의 파일이 존재하지 않습니다" means the key is valid but dataset -1 doesn't exist
-            success_candidates = [
-                "요청하신 파일을 다운로드할 수 있습니다",
-                "요청하신 데이터셋의 파일이 존재하지 않습니다"  # This is actually success for key validation
-            ]
-            failure_candidates = ["인증", "권한", "API", "키"]
-
-            def check_success(body: str) -> bool:
-                """Check if the response body contains a success message."""
-                return any(candidate in body for candidate in success_candidates)
-
-            def check_failure(body: str) -> bool:
-                """Check if the response body contains a failure message."""
-                return any(candidate in body for candidate in failure_candidates)
-
-            success = check_success(response_body)
-            failure = check_failure(response_body)
-
-            if success:
-                return True
-            elif failure:
-                return False
-            else:
-                # Invalid response - or API changed?
-                return False
-
-        except requests.Timeout:
+        except (requests.Timeout, requests.RequestException):
             return False
-        except requests.RequestException as e:
+        except (ValueError, KeyError):
+            # JSON decode error or missing key
             return False
 
     def get_auth_headers(self) -> Optional[Dict[str, str]]:
@@ -120,8 +93,6 @@ class AIHubAuth:
         if not self.api_key:
             return None
 
-        # Don't validate on every request to avoid blocking
-        # The API key should be validated when the user clicks "Validate API Key"
         return {"apikey": self.api_key}
 
     def set_api_key(self, api_key: str) -> None:

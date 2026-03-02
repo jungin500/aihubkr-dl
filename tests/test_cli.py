@@ -217,14 +217,13 @@ class TestCLIFunctions:
 
     @patch('src.aihubkr.cli.main.AIHubDownloader')
     def test_download_dataset_success(self, mock_downloader_class):
-        """Test successful dataset download."""
+        """Test successful dataset download - file tree error triggers early return."""
         # Mock downloader
         mock_downloader = Mock()
         mock_downloader_class.return_value = mock_downloader
 
-        # Mock successful download
-        from src.aihubkr.core.downloader import DownloadStatus
-        mock_downloader.download_and_process_dataset.return_value = DownloadStatus.SUCCESS
+        # Mock get_file_tree to return an error (testing early-return path)
+        mock_downloader.get_file_tree.return_value = (None, "Test error")
 
         # Capture output
         with patch('sys.stdout', new=StringIO()) as mock_stdout:
@@ -238,14 +237,13 @@ class TestCLIFunctions:
 
     @patch('src.aihubkr.cli.main.AIHubDownloader')
     def test_download_dataset_failure(self, mock_downloader_class):
-        """Test dataset download failure."""
+        """Test dataset download failure - file tree not found."""
         # Mock downloader
         mock_downloader = Mock()
         mock_downloader_class.return_value = mock_downloader
 
-        # Mock failed download
-        from src.aihubkr.core.downloader import DownloadStatus
-        mock_downloader.download_and_process_dataset.return_value = DownloadStatus.AUTHENTICATION_ERROR
+        # Mock get_file_tree to return no content
+        mock_downloader.get_file_tree.return_value = (None, "Not found")
 
         # Capture output
         with patch('sys.stdout', new=StringIO()) as mock_stdout:

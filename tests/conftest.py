@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 #
 # AIHubKR Test Configuration
-# Shared fixtures and test utilities for AIHub API testing
+# Shared fixtures and test utilities for AIHub API testing (v0.6)
 #
 # - Common test fixtures for API mocking
 # - Response simulation utilities
 # - Test data and constants
-# - Custom success/failure condition helpers
 #
 # @author Jung-In An <ji5489@gmail.com>
-# @with Claude Sonnet 4 (Cutoff 2025/06/16)
 
 import os
 import tempfile
@@ -22,25 +20,11 @@ import responses
 
 
 class AIHubTestResponses:
-    """Test response data for AIHub API endpoints."""
+    """Test response data for AIHub API v0.6 endpoints."""
 
-    # API Key Validation Responses (always HTTP 502 but content determines success)
-    VALID_API_KEY_RESPONSE = """UTF-8
-output normally
-modify the character information
-요청하신 파일을 다운로드할 수 있습니다.
-파일 다운로드를 시작합니다."""
-
-    INVALID_API_KEY_RESPONSE = """UTF-8
-output normally
-modify the character information
-인증에 실패했습니다.
-권한이 없습니다."""
-
-    UNKNOWN_API_KEY_RESPONSE = """UTF-8
-output normally
-modify the character information
-알 수 없는 오류가 발생했습니다."""
+    # API Key Validation Responses (POST /api/keyValidate.do → JSON)
+    VALID_API_KEY_RESPONSE = '{"msg":"login success","code":200}'
+    INVALID_API_KEY_RESPONSE = '{"msg":"login fail","code":401}'
 
     # Dataset List Response
     DATASET_LIST_RESPONSE = """UTF-8
@@ -59,6 +43,17 @@ modify the character information
 ================================================================================
 """
 
+    # Data Package List Response
+    DATAPACKAGE_LIST_RESPONSE = """UTF-8
+output normally
+modify the character information
+==================DataPackage 목록==================
+6, 국내 여행로그 분석
+5, 한-다국어 번역 말뭉치
+4, 한-영 번역 말뭉치
+==========================================
+"""
+
     # File Tree Response
     FILE_TREE_RESPONSE = """UTF-8
 output normally
@@ -73,20 +68,11 @@ dataset_001
 │       └── test.txt | 500KB | 4
 └── metadata.json | 15KB | 5"""
 
-    # Download Response (successful)
-    DOWNLOAD_SUCCESS_RESPONSE = """UTF-8
-output normally
-modify the character information
-다운로드가 시작됩니다.
-파일 크기: 1.5GB
-예상 시간: 5분"""
+    # Download Response (failure - privilege error, HTTP 502)
+    DOWNLOAD_PRIVILEGE_ERROR = "다운로드 서비스는 홈페이지(https://aihub.or.kr)에서 신청 및 승인 후 이용 가능 합니다."
 
-    # Download Response (failure)
-    DOWNLOAD_FAILURE_RESPONSE = """UTF-8
-output normally
-modify the character information
-다운로드에 실패했습니다.
-권한이 없거나 파일이 존재하지 않습니다."""
+    # Download Response (failure - old version rejected)
+    DOWNLOAD_VERSION_REJECTED = "aihubshell 신규 버전을 다운로드해 주시기 바랍니다."
 
 
 class AIHubTestUtils:
@@ -104,38 +90,6 @@ class AIHubTestUtils:
         mock_response.text = content
         mock_response.headers = headers or {}
         return mock_response
-
-    @staticmethod
-    def validate_success_conditions(response_text: str) -> bool:
-        """Validate if response indicates success based on AIHub API patterns."""
-        success_indicators = [
-            "요청하신",
-            "파일",
-            "다운로드",
-            "시작",
-            "완료"
-        ]
-
-        failure_indicators = [
-            "인증",
-            "권한",
-            "실패",
-            "오류",
-            "없습니다"
-        ]
-
-        # Check for success indicators
-        for indicator in success_indicators:
-            if indicator in response_text:
-                return True
-
-        # Check for failure indicators
-        for indicator in failure_indicators:
-            if indicator in response_text:
-                return False
-
-        # Default to failure if no clear indicators
-        return False
 
     @staticmethod
     def get_test_api_key() -> str:
@@ -157,15 +111,15 @@ def temp_dir():
 
 @pytest.fixture
 def mock_api_responses():
-    """Mock AIHub API responses for testing."""
+    """Mock AIHub API v0.6 responses for testing."""
     with responses.RequestsMock() as rsps:
-        # Mock API key validation endpoint
+        # Mock API key validation endpoint (POST, JSON response)
         rsps.add(
-            responses.GET,
-            "https://api.aihub.or.kr/down/0.5/-1.do",
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
             body=AIHubTestResponses.VALID_API_KEY_RESPONSE,
-            status=502,  # Always 502 but content determines success
-            content_type="text/plain"
+            status=200,
+            content_type="application/json"
         )
 
         # Mock dataset list endpoint
@@ -186,12 +140,12 @@ def mock_api_responses():
             content_type="text/plain"
         )
 
-        # Mock download endpoint
+        # Mock data package list endpoint
         rsps.add(
             responses.GET,
-            "https://api.aihub.or.kr/down/0.5/001/all",
-            body=AIHubTestResponses.DOWNLOAD_SUCCESS_RESPONSE,
-            status=200,
+            "https://api.aihub.or.kr/info/datapckage.do",
+            body=AIHubTestResponses.DATAPACKAGE_LIST_RESPONSE,
+            status=502,
             content_type="text/plain"
         )
 
@@ -221,7 +175,7 @@ def mock_config():
     """Mock configuration for testing."""
     config_data = {
         "api_key": "test-api-key-12345",
-        "version": "2"
+        "version": "3"
     }
     return config_data
 
@@ -229,7 +183,6 @@ def mock_config():
 @pytest.fixture(autouse=True)
 def setup_test_environment():
     """Setup test environment variables."""
-    # Set test environment variables
     os.environ["AIHUB_APIKEY"] = "test-api-key-12345"
 
     yield
