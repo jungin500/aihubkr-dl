@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 #
 # AIHub Downloader Tests
-# Unit tests for dataset download functionality with custom response processing
+# Unit tests for dataset download functionality (v0.6 API)
 #
 # - Tests response processing with UTF-8 headers and notice sections
-# - Validates success/failure based on content analysis
 # - Tests file tree parsing and dataset operations
+# - Tests data package operations
 # - Mocks API responses for controlled testing
 #
 # @author Jung-In An <ji5489@gmail.com>
-# @with Claude Sonnet 4 (Cutoff 2025/06/16)
 
 import os
 import requests
@@ -35,6 +34,20 @@ class TestAIHubDownloader:
         """Test initialization without authentication headers."""
         downloader = AIHubDownloader()
         assert downloader.auth_headers == {}
+
+    def test_api_version_is_0_6(self):
+        """Test that API version is 0.6."""
+        assert AIHubDownloader.API_VERSION == "0.6"
+
+    def test_base_download_url(self):
+        """Test that download URL uses v0.6."""
+        assert "/down/0.6" in AIHubDownloader.BASE_DOWNLOAD_URL
+
+    def test_package_urls(self):
+        """Test that data package URLs are correctly defined."""
+        assert "datapckage.do" in AIHubDownloader.DATAPACKAGE_URL
+        assert "/info/pckage" in AIHubDownloader.BASE_PACKAGE_TREE_URL
+        assert "/down/pckage/0.6" in AIHubDownloader.BASE_PACKAGE_DOWNLOAD_URL
 
     def test_process_response_success_200(self):
         """Test processing successful response with HTTP 200."""
@@ -190,6 +203,45 @@ Content after"""
 
         assert datasets is None
 
+    @responses.activate
+    def test_get_datapackage_info_success(self):
+        """Test successful data package information retrieval."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/datapckage.do",
+            body="""==================DataPackage 목록==================
+6, 국내 여행로그 분석
+5, 한-다국어 번역 말뭉치
+==========================================
+""",
+            status=502,
+            content_type="text/plain;charset=UTF-8"
+        )
+
+        downloader = AIHubDownloader()
+        packages = downloader.get_datapackage_info()
+
+        assert packages is not None
+        assert len(packages) == 2
+        assert packages[0] == ("6", "국내 여행로그 분석")
+        assert packages[1] == ("5", "한-다국어 번역 말뭉치")
+
+    @responses.activate
+    def test_get_datapackage_info_failure(self):
+        """Test failed data package information retrieval."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/datapckage.do",
+            body="Error",
+            status=500,
+            content_type="text/plain"
+        )
+
+        downloader = AIHubDownloader()
+        packages = downloader.get_datapackage_info()
+
+        assert packages is None
+
     def test_process_dataset_list(self):
         """Test processing dataset list content."""
         content = """================================================================================
@@ -266,6 +318,29 @@ dataset_001
         assert file_tree is None
         assert error_message is not None
 
+    @responses.activate
+    def test_get_package_file_tree_success(self):
+        """Test successful data package file tree retrieval."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/pckage/1.do",
+            body="""UTF-8
+output normally
+modify the character information
+package_001
+├── data.zip | 5 MB | 100
+└── labels.zip | 2 MB | 101""",
+            status=200,
+            content_type="text/plain"
+        )
+
+        downloader = AIHubDownloader()
+        file_tree, error_message = downloader.get_package_file_tree("1")
+
+        assert error_message is None
+        assert file_tree is not None
+        assert "package_001" in file_tree
+
     def test_export_dataset_list_to_csv(self, temp_dir):
         """Test exporting dataset list to CSV."""
         datasets = [
@@ -309,14 +384,24 @@ dataset_001
         assert downloader._format_size(500) == "500.0B"
 
     def test_get_raw_url(self):
-        """Test raw URL generation."""
+        """Test raw URL generation for v0.6."""
         downloader = AIHubDownloader()
 
         url = downloader.get_raw_url("001", "all")
-        assert url == "https://api.aihub.or.kr/down/0.5/001.do?fileSn=all"
+        assert url == "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all"
 
         url = downloader.get_raw_url("002", "1,2,3")
-        assert url == "https://api.aihub.or.kr/down/0.5/002.do?fileSn=1,2,3"
+        assert url == "https://api.aihub.or.kr/down/0.6/002.do?fileSn=1,2,3"
+
+    def test_get_raw_package_url(self):
+        """Test raw URL generation for data packages."""
+        downloader = AIHubDownloader()
+
+        url = downloader.get_raw_package_url("1", "all")
+        assert url == "https://api.aihub.or.kr/down/pckage/0.6/1.do?fileSn=all"
+
+        url = downloader.get_raw_package_url("3", "100,101")
+        assert url == "https://api.aihub.or.kr/down/pckage/0.6/3.do?fileSn=100,101"
 
 
 class TestDownloadStatus:
@@ -389,10 +474,10 @@ test_dataset
                 status=200
             )
 
-            # Mock download
+            # Mock download (v0.6 URL)
             rsps.add(
                 responses.GET,
-                "https://api.aihub.or.kr/down/0.5/001.do?fileSn=all",
+                "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all",
                 body="다운로드가 시작됩니다.",
                 status=200
             )
@@ -418,11 +503,8 @@ test_dataset
     @pytest.mark.slow
     def test_real_api_interaction(self):
         """Test with real API interaction (marked as slow)."""
-        # This test requires internet connection and may use real API
-        # It's marked as slow and should be run separately
         downloader = AIHubDownloader()
 
-        # Test dataset info (this might fail if API is down)
         try:
             datasets = downloader.get_dataset_info()
             if datasets is not None:
@@ -431,5 +513,4 @@ test_dataset
                     assert isinstance(dataset_id, str)
                     assert isinstance(dataset_name, str)
         except Exception:
-            # API might be unavailable, which is acceptable for this test
             pass

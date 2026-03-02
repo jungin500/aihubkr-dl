@@ -56,9 +56,13 @@ class DownloadStatus(Enum):
 
 class AIHubDownloader:
     BASE_URL = "https://api.aihub.or.kr"
-    BASE_DOWNLOAD_URL = f"{BASE_URL}/down/0.5"
+    API_VERSION = "0.6"
+    BASE_DOWNLOAD_URL = f"{BASE_URL}/down/{API_VERSION}"
     BASE_FILETREE_URL = f"{BASE_URL}/info"
     DATASET_URL = f"{BASE_URL}/info/dataset.do"
+    DATAPACKAGE_URL = f"{BASE_URL}/info/datapckage.do"
+    BASE_PACKAGE_TREE_URL = f"{BASE_URL}/info/pckage"
+    BASE_PACKAGE_DOWNLOAD_URL = f"{BASE_URL}/down/pckage/{API_VERSION}"
 
     def __init__(self, auth_headers: Optional[Dict[str, str]] = None):
         self.auth_headers = auth_headers or {}
@@ -174,6 +178,66 @@ class AIHubDownloader:
             # Remove print statement - let calling code handle errors
             # print(f"Request failed while fetching dataset information: {e}")
             return None
+
+    def get_datapackage_info(self) -> Optional[List[Tuple[str, str]]]:
+        """Fetch information about all data packages and return as a list."""
+        try:
+            response = requests.get(self.DATAPACKAGE_URL, timeout=30)
+            success, content = self._process_response(response)
+            if success and content:
+                return self.process_dataset_list(content)
+            else:
+                return None
+        except requests.Timeout:
+            return None
+        except requests.RequestException:
+            return None
+
+    def get_package_file_tree(self, package_key: str) -> Tuple[Optional[str], Optional[str]]:
+        """Fetch file tree structure for a data package. Returns (content, error_message)."""
+        url = f"{self.BASE_PACKAGE_TREE_URL}/{package_key}.do"
+        try:
+            response = requests.get(url, timeout=30)
+            if response.status_code == 403:
+                return None, f"Data package {package_key} is not available (HTTP 403)."
+            success, content = self._process_response(response)
+            if success:
+                return content, None
+            else:
+                return None, f"Failed to fetch package file tree. Status code: {response.status_code}"
+        except requests.Timeout:
+            return None, "Timeout while fetching package file tree."
+        except requests.RequestException as e:
+            return None, f"Network error: {e}"
+
+    def download_package(
+        self, package_key: str, file_keys: str = "all", output_dir: str = ".",
+        progress_callback=None
+    ) -> DownloadStatus:
+        """Download a data package."""
+        url = f"{self.BASE_PACKAGE_DOWNLOAD_URL}/{package_key}.do?fileSn={file_keys}"
+        return self._download_with_requests(url, package_key, output_dir, progress_callback)
+
+    def download_and_process_package(
+        self, package_key: str, file_keys: str = "all", output_dir: str = ".",
+        progress_callback=None
+    ) -> DownloadStatus:
+        """Download a data package, extract it, merge parts, and clean up."""
+        download_status = self.download_package(package_key, file_keys, output_dir, progress_callback)
+
+        if download_status == DownloadStatus.SUCCESS:
+            if progress_callback:
+                progress_callback("Extracting files...", -1, -1, -1)
+            tar_file = os.path.join(output_dir, "download.tar")
+            self._extract_tar(tar_file, output_dir)
+
+            if progress_callback:
+                progress_callback("Merging file parts...", -1, -1, -1)
+            self._merge_parts_in_subdirs(output_dir)
+            os.remove(tar_file)
+            return DownloadStatus.SUCCESS
+        else:
+            return download_status
 
     def download_and_process_dataset(
         self, dataset_key: str, file_keys: str = "all", output_dir: str = ".",
@@ -348,25 +412,23 @@ class AIHubDownloader:
                 return DownloadStatus.SUCCESS
 
         except requests.RequestException as e:
-            if hasattr(e, 'response') and e.response is not None and e.response.status_code == 502:
-                # Must submit the acceptance form before downloading
-                form_url = f"https://aihub.or.kr/aihubdata/data/dwld.do?dataSetSn={dataset_key}"
-                # Convert the privilege error message to a more concise format
-                # print(f"+==============================================================================+")
-                # print(f"| PrivilegeError: You must accept the terms and conditions before downloading. |")
-                # print(f"| Please visit the following AIHub URL and accept the terms:                   |")
-                # print(f"| {'':76s} |")
-                # print(f"| {form_url:76s} |")
-                # print(f"+==============================================================================+")
-
-                # Open default browser for this URL
-                import webbrowser
-                webbrowser.open(form_url)
-                return DownloadStatus.PRIVILEGE_ERROR
-            elif hasattr(e, 'response') and e.response is not None:
-                if e.response.status_code == 401:
+            if hasattr(e, 'response') and e.response is not None:
+                resp = e.response
+                if resp.status_code == 502:
+                    body = resp.text if hasattr(resp, 'text') else ""
+                    if "승인" in body or "신청" in body:
+                        # Must submit the acceptance form before downloading
+                        form_url = f"https://aihub.or.kr/aihubdata/data/dwld.do?dataSetSn={dataset_key}"
+                        import webbrowser
+                        webbrowser.open(form_url)
+                        return DownloadStatus.PRIVILEGE_ERROR
+                    elif "인증" in body or "키" in body:
+                        return DownloadStatus.AUTHENTICATION_ERROR
+                    else:
+                        return DownloadStatus.PRIVILEGE_ERROR
+                elif resp.status_code == 401:
                     return DownloadStatus.AUTHENTICATION_ERROR
-                elif e.response.status_code == 404:
+                elif resp.status_code == 404:
                     return DownloadStatus.FILE_NOT_FOUND
                 else:
                     return DownloadStatus.NETWORK_ERROR
@@ -389,3 +451,7 @@ class AIHubDownloader:
     def get_raw_url(self, dataset_key: str, file_keys: str = "all") -> str:
         """Get the raw download URL for a dataset."""
         return f"{self.BASE_DOWNLOAD_URL}/{dataset_key}.do?fileSn={file_keys}"
+
+    def get_raw_package_url(self, package_key: str, file_keys: str = "all") -> str:
+        """Get the raw download URL for a data package."""
+        return f"{self.BASE_PACKAGE_DOWNLOAD_URL}/{package_key}.do?fileSn={file_keys}"

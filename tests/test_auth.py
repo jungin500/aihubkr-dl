@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 #
 # AIHub Authentication Tests
-# Unit tests for API key authentication with custom success/failure conditions
+# Unit tests for API key authentication with v0.6 JSON key validation
 #
-# - Tests API key validation with HTTP 502 responses
-# - Validates success/failure based on response content
+# - Tests API key validation via POST /api/keyValidate.do (JSON response)
 # - Tests credential management and storage
 # - Mocks API responses for controlled testing
 #
 # @author Jung-In An <ji5489@gmail.com>
-# @with Claude Sonnet 4 (Cutoff 2025/06/16)
 
 import os
 from unittest.mock import Mock, patch
@@ -69,32 +67,29 @@ class TestAIHubAuth:
         assert headers is None
 
     @responses.activate
-    def test_validate_api_key_always_fails_with_502(self):
-        """Test API key validation always fails with HTTP 502 response (real API behavior)."""
-        # Mock the API key validation endpoint with real failure message
+    def test_validate_api_key_success(self):
+        """Test API key validation success with JSON response."""
         responses.add(
-            responses.GET,
-            "https://api.aihub.or.kr/down/0.5/-1.do",
-            body="요청하신 데이터셋의 파일이 존재하지 않습니다. 파일의 존재여부 및 자세한 사항은 홈페이지(https://aihub.or.kr)에서 확인 바랍니다.",
-            status=502,  # Always 502 and always indicates failure
-            content_type="text/plain"
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
+            json={"msg": "login success", "code": 200},
+            status=200,
+            content_type="application/json"
         )
 
         auth = AIHubAuth("valid-api-key")
         result = auth.validate_api_key()
-        # The validation endpoint always returns failure, even with valid API keys
-        assert result is False
+        assert result is True
 
     @responses.activate
-    def test_validate_api_key_failure_with_502(self):
-        """Test API key validation failure with HTTP 502 response."""
-        # Mock the API key validation endpoint with real failure message
+    def test_validate_api_key_failure(self):
+        """Test API key validation failure with JSON response."""
         responses.add(
-            responses.GET,
-            "https://api.aihub.or.kr/down/0.5/-1.do",
-            body="요청하신 데이터셋의 파일이 존재하지 않습니다. 파일의 존재여부 및 자세한 사항은 홈페이지(https://aihub.or.kr)에서 확인 바랍니다.",
-            status=502,  # Always 502 but content indicates failure
-            content_type="text/plain"
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
+            json={"msg": "login fail", "code": 401},
+            status=200,
+            content_type="application/json"
         )
 
         auth = AIHubAuth("invalid-api-key")
@@ -102,30 +97,42 @@ class TestAIHubAuth:
         assert result is False
 
     @responses.activate
-    def test_validate_api_key_unknown_response(self):
-        """Test API key validation with unknown response content."""
-        # Mock the API key validation endpoint
+    def test_validate_api_key_malformed_json(self):
+        """Test API key validation with malformed JSON response."""
         responses.add(
-            responses.GET,
-            "https://api.aihub.or.kr/down/0.5/-1.do",
-            body="알 수 없는 응답입니다.",
-            status=502,
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
+            body="not json at all",
+            status=200,
             content_type="text/plain"
         )
 
-        auth = AIHubAuth("unknown-api-key")
+        auth = AIHubAuth("some-api-key")
+        result = auth.validate_api_key()
+        assert result is False
+
+    @responses.activate
+    def test_validate_api_key_missing_code_field(self):
+        """Test API key validation with JSON missing the code field."""
+        responses.add(
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
+            json={"msg": "something"},
+            status=200,
+            content_type="application/json"
+        )
+
+        auth = AIHubAuth("some-api-key")
         result = auth.validate_api_key()
         assert result is False
 
     @responses.activate
     def test_validate_api_key_timeout(self):
         """Test API key validation with timeout."""
-        # Mock the API key validation endpoint to timeout
         responses.add(
-            responses.GET,
-            "https://api.aihub.or.kr/down/0.5/-1.do",
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
             body=requests.Timeout("Request timed out"),
-            status=408
         )
 
         auth = AIHubAuth("timeout-api-key")
@@ -135,12 +142,10 @@ class TestAIHubAuth:
     @responses.activate
     def test_validate_api_key_network_error(self):
         """Test API key validation with network error."""
-        # Mock the API key validation endpoint to fail
         responses.add(
-            responses.GET,
-            "https://api.aihub.or.kr/down/0.5/-1.do",
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
             body=requests.ConnectionError("Connection failed"),
-            status=500
         )
 
         auth = AIHubAuth("network-error-api-key")
@@ -153,6 +158,37 @@ class TestAIHubAuth:
         result = auth.validate_api_key()
         assert result is False
 
+    @responses.activate
+    def test_validate_uses_post_method(self):
+        """Test that validation uses POST, not GET."""
+        responses.add(
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
+            json={"msg": "login success", "code": 200},
+            status=200,
+        )
+
+        auth = AIHubAuth("test-key")
+        auth.validate_api_key()
+
+        assert len(responses.calls) == 1
+        assert responses.calls[0].request.method == "POST"
+
+    @responses.activate
+    def test_validate_sends_apikey_header(self):
+        """Test that validation sends the apikey header."""
+        responses.add(
+            responses.POST,
+            "https://api.aihub.or.kr/api/keyValidate.do",
+            json={"msg": "login success", "code": 200},
+            status=200,
+        )
+
+        auth = AIHubAuth("MY-TEST-KEY")
+        auth.validate_api_key()
+
+        assert responses.calls[0].request.headers["apikey"] == "MY-TEST-KEY"
+
     @patch.object(AIHubConfig, 'get_instance')
     def test_save_credential(self, mock_config_instance):
         """Test saving API key credentials."""
@@ -164,7 +200,7 @@ class TestAIHubAuth:
         auth.save_credential()
 
         assert mock_config.config_db["api_key"] == "test-api-key"
-        assert mock_config.config_db["version"] == "2"
+        assert mock_config.config_db["version"] == "3"
         mock_config.save_to_disk.assert_called_once()
 
     def test_save_credential_without_api_key(self):
@@ -179,7 +215,7 @@ class TestAIHubAuth:
         mock_config = Mock()
         mock_config.config_db = {
             "api_key": "saved-api-key",
-            "version": "2"
+            "version": "3"
         }
         mock_config_instance.return_value = mock_config
 
@@ -192,11 +228,11 @@ class TestAIHubAuth:
 
     @patch.object(AIHubConfig, 'get_instance')
     def test_load_credentials_outdated_version(self, mock_config_instance):
-        """Test loading credentials with outdated version."""
+        """Test loading credentials with outdated version (v2 from old API)."""
         mock_config = Mock()
         mock_config.config_db = {
             "api_key": "old-api-key",
-            "version": "1"  # Outdated version
+            "version": "2"  # Outdated version (from v0.5 API)
         }
         mock_config.save_to_disk = Mock()
         mock_config.load_from_disk = Mock()
@@ -208,7 +244,7 @@ class TestAIHubAuth:
         assert result is None
         assert auth.api_key is None
         assert auth.autosave_enabled is False
-        # Should clear the outdated credentials by calling pop on config_db
+        # Should clear the outdated credentials
         assert "api_key" not in mock_config.config_db
         assert "version" not in mock_config.config_db
         mock_config.save_to_disk.assert_called_once()
@@ -233,7 +269,7 @@ class TestAIHubAuth:
         mock_config = Mock()
         mock_config.config_db = {
             "api_key": "test-api-key",
-            "version": "2"
+            "version": "3"
         }
         mock_config.save_to_disk = Mock()
         mock_config.load_from_disk = Mock()
@@ -245,10 +281,17 @@ class TestAIHubAuth:
 
         assert auth.api_key is None
         assert auth.autosave_enabled is False
-        # Should clear the credentials by calling pop on config_db
         assert "api_key" not in mock_config.config_db
         assert "version" not in mock_config.config_db
         mock_config.save_to_disk.assert_called_once()
+
+    def test_credential_version_is_3(self):
+        """Test that credential version is 3 for v0.6 API."""
+        assert AIHubAuth.CREDENTIAL_VERSION == "3"
+
+    def test_key_validate_url(self):
+        """Test that key validation URL is the v0.6 endpoint."""
+        assert AIHubAuth.KEY_VALIDATE_URL == "https://api.aihub.or.kr/api/keyValidate.do"
 
 
 class TestAIHubAuthIntegration:
@@ -278,8 +321,6 @@ class TestAIHubAuthIntegration:
     @pytest.mark.slow
     def test_real_api_key_validation(self):
         """Test with real API key validation (marked as slow)."""
-        # This test requires a real API key and internet connection
-        # It's marked as slow and should be run separately
         api_key = os.getenv("AIHUB_TEST_API_KEY")
         if not api_key:
             pytest.skip("AIHUB_TEST_API_KEY environment variable not set")
@@ -287,5 +328,4 @@ class TestAIHubAuthIntegration:
         auth = AIHubAuth(api_key)
         result = auth.validate_api_key()
 
-        # Should return a boolean (True for valid, False for invalid)
         assert isinstance(result, bool)
