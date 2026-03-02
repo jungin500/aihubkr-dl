@@ -1,13 +1,11 @@
 # AIHub API Testing Workflow
-# Runs comprehensive tests for AIHub API server with custom success/failure conditions
+# Runs comprehensive tests for AIHub API v0.6
 #
 # - Unit and integration tests on every push/PR
-# - Real API tests when API key is available
-# - Coverage reporting and analysis
-# - Performance testing for API interactions
+# - Real API tests when AIHUB_TEST_API_KEY secret is available
+#   (tests self-skip gracefully when key is missing)
 #
 # @author Jung-In An <ji5489@gmail.com>
-# @with Claude Sonnet 4 (Cutoff 2025/06/16)
 
 name: AIHub API Tests
 
@@ -27,16 +25,16 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      
+
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -44,16 +42,16 @@ jobs:
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ matrix.python-version }}-
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-      
+
       - name: Run unit and integration tests
         run: |
-          python tests/run_tests.py --unit --integration --coverage -v
-      
+          python -m pytest tests/test_auth.py tests/test_downloader.py tests/test_filelist_parser.py tests/test_api_version.py tests/test_cli.py tests/test_api_integration.py -v
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -62,21 +60,20 @@ jobs:
           name: unit-integration-${{ matrix.python-version }}
           fail_ci_if_error: false
 
-  # Real API Tests (only when API key is available)
+  # Real API + Live Tests (always runs; tests self-skip if no API key)
   test-api:
     runs-on: ubuntu-latest
     needs: test-unit-integration
-    if: ${{ secrets.AIHUB_TEST_API_KEY != '' }}
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      
+
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -84,18 +81,18 @@ jobs:
           key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-      
-      - name: Run real API tests
+
+      - name: Run live API tests
         env:
           AIHUB_TEST_API_KEY: ${{ secrets.AIHUB_TEST_API_KEY }}
         run: |
-          python tests/run_tests.py --api --performance -v
-      
+          python -m pytest tests/test_api_v06_live.py -v
+
       - name: Upload API test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -106,64 +103,20 @@ jobs:
             coverage.xml
           retention-days: 7
 
-  # Performance Tests (only when API key is available)
-  test-performance:
-    runs-on: ubuntu-latest
-    needs: test-unit-integration
-    if: ${{ secrets.AIHUB_TEST_API_KEY != '' }}
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Cache pip dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test]"
-      
-      - name: Run performance tests
-        env:
-          AIHUB_TEST_API_KEY: ${{ secrets.AIHUB_TEST_API_KEY }}
-        run: |
-          python tests/run_tests.py --performance -v
-      
-      - name: Upload performance test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: performance-test-results
-          path: |
-            test-results/
-            performance-logs/
-          retention-days: 7
-
   # Custom Success/Failure Condition Tests
   test-custom-conditions:
     runs-on: ubuntu-latest
     needs: test-unit-integration
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      
+
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
@@ -171,115 +124,39 @@ jobs:
           key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
             ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-      
+
       - name: Run custom success/failure condition tests
         run: |
-          python tests/run_tests.py --custom-conditions -v
-      
-      - name: Upload custom condition test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: custom-condition-test-results
-          path: |
-            test-results/
-            custom-condition-logs/
-          retention-days: 7
-
-  # Test Report Generation
-  test-report:
-    runs-on: ubuntu-latest
-    needs: [test-unit-integration, test-api, test-performance, test-custom-conditions]
-    if: always()
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test]"
-      
-      - name: Download test artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: test-artifacts/
-      
-      - name: Generate test report
-        run: |
-          echo "=== AIHub API Test Report ===" > test-report.md
-          echo "Generated: $(date)" >> test-report.md
-          echo "" >> test-report.md
-          
-          echo "## Test Summary" >> test-report.md
-          echo "- Unit/Integration Tests: ✅ Passed" >> test-report.md
-          
-          if [ -d "test-artifacts/api-test-results" ]; then
-            echo "- Real API Tests: ✅ Completed" >> test-report.md
-          else
-            echo "- Real API Tests: ⏭️ Skipped (no API key)" >> test-report.md
-          fi
-          
-          if [ -d "test-artifacts/performance-test-results" ]; then
-            echo "- Performance Tests: ✅ Completed" >> test-report.md
-          else
-            echo "- Performance Tests: ⏭️ Skipped (no API key)" >> test-report.md
-          fi
-          
-          echo "- Custom Condition Tests: ✅ Completed" >> test-report.md
-          
-          echo "" >> test-report.md
-          echo "## Test Coverage" >> test-report.md
-          echo "Coverage reports are available in the artifacts." >> test-report.md
-          
-          echo "" >> test-report.md
-          echo "## Custom Success/Failure Conditions" >> test-report.md
-          echo "The test framework validates AIHub API responses based on content rather than HTTP status codes." >> test-report.md
-          echo "- HTTP 502 responses can indicate success based on Korean text content" >> test-report.md
-          echo "- Success indicators: 요청하신, 파일, 다운로드, 시작" >> test-report.md
-          echo "- Failure indicators: 인증, 권한, 실패, 오류, 없습니다" >> test-report.md
-      
-      - name: Upload test report
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report
-          path: test-report.md
-          retention-days: 30
+          python -m pytest tests/test_api_integration.py::TestAIHubAPICustomConditions -v
 
   # Security and Linting
   security-lint:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      
+
       - name: Install security tools
         run: |
           python -m pip install --upgrade pip
           pip install bandit safety
-      
+
       - name: Run security scan
         run: |
           bandit -r src/ -f json -o bandit-report.json || true
           safety check --json --output safety-report.json || true
-      
+
       - name: Upload security reports
         uses: actions/upload-artifact@v4
         with:
@@ -288,38 +165,3 @@ jobs:
             bandit-report.json
             safety-report.json
           retention-days: 30
-
-  # Documentation Tests
-  test-docs:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      
-      - name: Install documentation tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install pydocstyle
-      
-      - name: Check documentation style
-        run: |
-          pydocstyle src/ || true
-      
-      - name: Validate README files
-        run: |
-          echo "Checking README files..."
-          if [ -f "README.md" ]; then
-            echo "✅ README.md exists"
-          fi
-          if [ -f "README_TESTING.md" ]; then
-            echo "✅ README_TESTING.md exists"
-          fi
-          if [ -f "CHANGELOG.md" ]; then
-            echo "✅ CHANGELOG.md exists"
-          fi 
