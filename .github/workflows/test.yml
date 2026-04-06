@@ -16,7 +16,7 @@ on:
     branches: [ main, develop ]
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
 
 jobs:
   # Unit and Integration Tests (always run)
@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout code
@@ -50,7 +50,7 @@ jobs:
 
       - name: Run unit and integration tests
         run: |
-          python -m pytest tests/test_auth.py tests/test_downloader.py tests/test_filelist_parser.py tests/test_api_version.py tests/test_cli.py tests/test_api_integration.py -v
+          python -m pytest tests/test_auth.py tests/test_downloader.py tests/test_filelist_parser.py tests/test_api_version.py tests/test_cli.py tests/test_api_integration.py tests/test_config.py tests/test_file_utils.py -v
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

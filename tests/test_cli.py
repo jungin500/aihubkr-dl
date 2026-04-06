@@ -21,6 +21,8 @@ from src.aihubkr.cli.main import (
     download_dataset,
     list_datasets,
     list_file_tree,
+    list_packages,
+    list_package_file_tree,
     main,
     parse_arguments,
     print_usage
@@ -436,25 +438,82 @@ class TestCLIMainFunction:
         # Verify error message
         assert "Failed to get authentication headers" in output
 
+    @patch('src.aihubkr.cli.main.parse_arguments')
+    @patch('src.aihubkr.cli.main.AIHubAuth')
+    @patch('src.aihubkr.cli.main.AIHubDownloader')
+    def test_main_falls_back_to_saved_credentials(self, mock_dl_cls, mock_auth_cls, mock_parse):
+        """When no --api-key and no env var, main() tries load_credentials()."""
+        mock_parse.return_value = {
+            'command': 'list',
+            'api_key': None,  # no CLI arg
+            'output_dir': '.',
+        }
+        # No AIHUB_APIKEY env var (fixture ensures this)
+
+        mock_auth = Mock()
+        mock_auth_cls.return_value = mock_auth
+        mock_auth.load_credentials.return_value = "saved-key-from-disk"
+        mock_auth.get_auth_headers.return_value = {'apikey': 'saved-key-from-disk'}
+
+        mock_dl = Mock()
+        mock_dl_cls.return_value = mock_dl
+        mock_dl.get_dataset_info.return_value = [("001", "Test")]
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            main()
+            output = out.getvalue()
+
+        # load_credentials should have been called
+        mock_auth.load_credentials.assert_called_once()
+        # Should proceed to list datasets
+        assert "Test" in output
+
+    @patch('src.aihubkr.cli.main.parse_arguments')
+    @patch('src.aihubkr.cli.main.AIHubAuth')
+    @patch('src.aihubkr.cli.main.prompt_api_key')
+    def test_main_prompts_when_no_credentials(self, mock_prompt, mock_auth_cls, mock_parse):
+        """When no --api-key, no env var, and no saved creds, main() prompts."""
+        mock_parse.return_value = {
+            'command': 'list',
+            'api_key': None,
+            'output_dir': '.',
+        }
+        mock_auth = Mock()
+        mock_auth_cls.return_value = mock_auth
+        mock_auth.load_credentials.return_value = None  # no saved creds
+        mock_auth.validate_api_key.return_value = False  # prompted key is invalid
+
+        mock_prompt.return_value = "prompted-key"
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            main()
+            output = out.getvalue()
+
+        mock_prompt.assert_called_once()
+        assert "Invalid API key" in output
+
 
 class TestCLIErrorHandling:
     """Test cases for CLI error handling."""
 
     @patch('src.aihubkr.cli.main.parse_arguments')
-    def test_main_invalid_command(self, mock_parse_args):
+    @patch('src.aihubkr.cli.main.AIHubAuth')
+    def test_main_invalid_command(self, mock_auth_class, mock_parse_args):
         """Test main function with invalid command."""
-        # Mock arguments with invalid command
         mock_parse_args.return_value = {
-            'command': 'invalid_command'
+            'command': 'invalid_command',
+            'api_key': 'test-key',
+            'output_dir': '.',
         }
+        mock_auth = Mock()
+        mock_auth_class.return_value = mock_auth
+        mock_auth.get_auth_headers.return_value = {'apikey': 'test-key'}
 
-        # Should handle gracefully
         with patch('sys.stdout', new=StringIO()) as mock_stdout:
             main()
             output = mock_stdout.getvalue()
 
-        # Should not crash
-        assert output is not None
+        assert "Invalid command" in output
 
     @patch('src.aihubkr.cli.main.parse_arguments')
     @patch('src.aihubkr.cli.main.AIHubAuth')
@@ -505,3 +564,201 @@ class TestCLIErrorHandling:
 
         # Should not crash
         assert output is not None
+
+
+class TestCLIPackageCommands:
+    """Tests for package-related CLI commands (previously untested paths)."""
+
+    # ── Argument Parsing ─────────────────────────────────────────────
+
+    def test_parse_arguments_package_list(self):
+        """Parse package-list command."""
+        with patch.object(sys, 'argv', ['aihubkr-dl', 'package-list']):
+            args = parse_arguments()
+            assert args['command'] == 'package-list'
+
+    def test_parse_arguments_package_files(self):
+        """Parse package-files command with key."""
+        with patch.object(sys, 'argv', ['aihubkr-dl', 'package-files', '6']):
+            args = parse_arguments()
+            assert args['command'] == 'package-files'
+            assert args['package_key'] == '6'
+
+    def test_parse_arguments_package_download(self):
+        """Parse package-download command with key and file-key."""
+        with patch.object(sys, 'argv', ['aihubkr-dl', 'package-download', '6', '--file-key', '100,101']):
+            args = parse_arguments()
+            assert args['command'] == 'package-download'
+            assert args['package_key'] == '6'
+            assert args['file_key'] == '100,101'
+
+    def test_parse_arguments_package_download_defaults(self):
+        """package-download defaults file-key to 'all'."""
+        with patch.object(sys, 'argv', ['aihubkr-dl', 'package-download', '3']):
+            args = parse_arguments()
+            assert args['file_key'] == 'all'
+
+    # ── list_packages function ───────────────────────────────────────
+
+    def test_list_packages_success(self):
+        """list_packages prints a table of packages."""
+        mock_dl = Mock()
+        mock_dl.get_datapackage_info.return_value = [
+            ("6", "국내 여행로그 분석"),
+            ("5", "한-다국어 번역 말뭉치"),
+        ]
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            list_packages(mock_dl)
+            output = out.getvalue()
+
+        assert "국내 여행로그 분석" in output
+        assert "한-다국어 번역 말뭉치" in output
+
+    def test_list_packages_failure(self):
+        """list_packages shows error when API returns None."""
+        mock_dl = Mock()
+        mock_dl.get_datapackage_info.return_value = None
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            list_packages(mock_dl)
+            output = out.getvalue()
+
+        assert "Failed to fetch data package information" in output
+
+    # ── list_package_file_tree function ──────────────────────────────
+
+    def test_list_package_file_tree_success(self):
+        """list_package_file_tree prints file table for a package."""
+        mock_dl = Mock()
+        file_tree = "package_001\n├── data.zip | 5 MB | 100\n└── labels.zip | 2 MB | 101"
+        mock_dl.get_package_file_tree.return_value = (file_tree, None)
+
+        with patch('src.aihubkr.cli.main.AIHubResponseParser') as MockParser:
+            parser_inst = Mock()
+            MockParser.return_value = parser_inst
+            parser_inst.parse_tree_output.return_value = (Mock(), [
+                ("package_001/data.zip", True, "100", (5242880, 4000000, 6000000)),
+                ("package_001/labels.zip", True, "101", (2097152, 1500000, 2500000)),
+            ])
+
+            with patch('sys.stdout', new=StringIO()) as out:
+                list_package_file_tree(mock_dl, "1")
+                output = out.getvalue()
+
+        assert "data.zip" in output
+        assert "labels.zip" in output
+
+    def test_list_package_file_tree_error(self):
+        """list_package_file_tree prints error on failure."""
+        mock_dl = Mock()
+        mock_dl.get_package_file_tree.return_value = (None, "Package not found")
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            list_package_file_tree(mock_dl, "999")
+            output = out.getvalue()
+
+        assert "Package not found" in output
+
+    def test_list_package_file_tree_no_files(self):
+        """list_package_file_tree shows 'No files' when tree is empty."""
+        mock_dl = Mock()
+        mock_dl.get_package_file_tree.return_value = ("empty_package", None)
+
+        with patch('src.aihubkr.cli.main.AIHubResponseParser') as MockParser:
+            parser_inst = Mock()
+            MockParser.return_value = parser_inst
+            parser_inst.parse_tree_output.return_value = (Mock(), [])
+
+            with patch('sys.stdout', new=StringIO()) as out:
+                list_package_file_tree(mock_dl, "1")
+                output = out.getvalue()
+
+        assert "No files found" in output
+
+    # ── main() routing for package commands ──────────────────────────
+
+    @patch('src.aihubkr.cli.main.parse_arguments')
+    @patch('src.aihubkr.cli.main.AIHubAuth')
+    @patch('src.aihubkr.cli.main.AIHubDownloader')
+    def test_main_package_list_command(self, mock_dl_cls, mock_auth_cls, mock_parse):
+        """main() routes package-list to list_packages."""
+        mock_parse.return_value = {
+            'command': 'package-list',
+            'api_key': 'test-key',
+            'output_dir': '.',
+        }
+        mock_auth = Mock()
+        mock_auth_cls.return_value = mock_auth
+        mock_auth.get_auth_headers.return_value = {'apikey': 'test-key'}
+
+        mock_dl = Mock()
+        mock_dl_cls.return_value = mock_dl
+        mock_dl.get_datapackage_info.return_value = [("1", "Test Package")]
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            main()
+            output = out.getvalue()
+
+        assert "Test Package" in output
+
+    @patch('src.aihubkr.cli.main.parse_arguments')
+    @patch('src.aihubkr.cli.main.AIHubAuth')
+    @patch('src.aihubkr.cli.main.AIHubDownloader')
+    def test_main_package_files_command(self, mock_dl_cls, mock_auth_cls, mock_parse):
+        """main() routes package-files to list_package_file_tree."""
+        mock_parse.return_value = {
+            'command': 'package-files',
+            'package_key': '1',
+            'api_key': 'test-key',
+            'output_dir': '.',
+        }
+        mock_auth = Mock()
+        mock_auth_cls.return_value = mock_auth
+        mock_auth.get_auth_headers.return_value = {'apikey': 'test-key'}
+
+        mock_dl = Mock()
+        mock_dl_cls.return_value = mock_dl
+        mock_dl.get_package_file_tree.return_value = ("pkg\n└── f.txt | 1KB | 1", None)
+
+        with patch('src.aihubkr.cli.main.AIHubResponseParser') as MockParser:
+            parser_inst = Mock()
+            MockParser.return_value = parser_inst
+            parser_inst.parse_tree_output.return_value = (Mock(), [
+                ("pkg/f.txt", True, "1", (1024, 512, 1536)),
+            ])
+
+            with patch('sys.stdout', new=StringIO()) as out:
+                main()
+                output = out.getvalue()
+
+        assert "f.txt" in output
+
+    @patch('src.aihubkr.cli.main.parse_arguments')
+    @patch('src.aihubkr.cli.main.AIHubAuth')
+    @patch('src.aihubkr.cli.main.AIHubDownloader')
+    def test_main_package_download_command(self, mock_dl_cls, mock_auth_cls, mock_parse):
+        """main() routes package-download to download_and_process_package."""
+        from src.aihubkr.core.downloader import DownloadStatus
+
+        mock_parse.return_value = {
+            'command': 'package-download',
+            'package_key': '6',
+            'file_key': 'all',
+            'output_dir': '.',
+            'api_key': 'test-key',
+        }
+        mock_auth = Mock()
+        mock_auth_cls.return_value = mock_auth
+        mock_auth.get_auth_headers.return_value = {'apikey': 'test-key'}
+
+        mock_dl = Mock()
+        mock_dl_cls.return_value = mock_dl
+        mock_dl.download_and_process_package.return_value = DownloadStatus.SUCCESS
+
+        with patch('sys.stdout', new=StringIO()) as out:
+            main()
+            output = out.getvalue()
+
+        mock_dl.download_and_process_package.assert_called_once_with("6", "all", ".")
+        assert "completed successfully" in output

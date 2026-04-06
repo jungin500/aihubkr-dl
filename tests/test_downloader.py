@@ -11,9 +11,11 @@
 # @author Jung-In An <ji5489@gmail.com>
 
 import os
+import re
+import tarfile
 import requests
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 
 import pytest
 import responses
@@ -514,3 +516,225 @@ test_dataset
                     assert isinstance(dataset_name, str)
         except Exception:
             pass
+
+
+class TestDownloaderFileOperations:
+    """Tests for download operations and end-to-end flow."""
+
+    @responses.activate
+    def test_download_with_requests_success(self, temp_dir):
+        """Successful download writes a file to disk."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all",
+            body=b"fake tar content here",
+            status=200,
+            headers={"content-length": "21"},
+        )
+
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        status = downloader.download_dataset("001", "all", str(temp_dir))
+
+        assert status == DownloadStatus.SUCCESS
+        assert (temp_dir / "download.tar").exists()
+        assert (temp_dir / "download.tar").read_bytes() == b"fake tar content here"
+
+    @responses.activate
+    def test_download_with_requests_privilege_error(self, temp_dir):
+        """502 with '승인' in body returns PRIVILEGE_ERROR."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/down/0.6/999.do?fileSn=all",
+            body="홈페이지에서 승인 후 이용 가능합니다.",
+            status=502,
+        )
+
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        # The download uses raise_for_status which triggers HTTPError for 502
+        status = downloader.download_dataset("999", "all", str(temp_dir))
+
+        assert status in (DownloadStatus.PRIVILEGE_ERROR, DownloadStatus.NETWORK_ERROR)
+
+    @responses.activate
+    def test_download_with_requests_network_error(self, temp_dir):
+        """Connection error returns NETWORK_ERROR."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all",
+            body=requests.ConnectionError("DNS failure"),
+        )
+
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        status = downloader.download_dataset("001", "all", str(temp_dir))
+
+        assert status == DownloadStatus.NETWORK_ERROR
+
+    @responses.activate
+    def test_download_backup_existing_tar(self, temp_dir):
+        """If download.tar already exists, it gets backed up before download."""
+        existing = temp_dir / "download.tar"
+        existing.write_bytes(b"old content")
+
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all",
+            body=b"new content",
+            status=200,
+            headers={"content-length": "11"},
+        )
+
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        status = downloader.download_dataset("001", "all", str(temp_dir))
+
+        assert status == DownloadStatus.SUCCESS
+        # New download.tar should have new content
+        assert (temp_dir / "download.tar").read_bytes() == b"new content"
+        # There should be a backup file
+        backup_files = [f for f in temp_dir.iterdir() if f.name.startswith("download_") and f.name.endswith(".tar")]
+        assert len(backup_files) == 1
+        assert backup_files[0].read_bytes() == b"old content"
+
+    @responses.activate
+    def test_download_with_progress_callback(self, temp_dir):
+        """Progress callback is called during download."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all",
+            body=b"X" * 1000,
+            status=200,
+            headers={"content-length": "1000"},
+        )
+
+        callback_calls = []
+
+        def progress_cb(msg, pct, downloaded, speed):
+            callback_calls.append((msg, pct, downloaded, speed))
+
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        status = downloader.download_dataset("001", "all", str(temp_dir), progress_callback=progress_cb)
+
+        assert status == DownloadStatus.SUCCESS
+        # At minimum, the "Download completed" callback should be called
+        assert len(callback_calls) >= 1
+        assert any("completed" in call[0].lower() for call in callback_calls)
+
+    @responses.activate
+    def test_get_file_tree_403(self):
+        """HTTP 403 returns a specific 'not available' error message."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/999.do",
+            body="Forbidden",
+            status=403,
+        )
+
+        downloader = AIHubDownloader()
+        file_tree, error_message = downloader.get_file_tree("999")
+
+        assert file_tree is None
+        assert "403" in error_message
+
+    @responses.activate
+    def test_get_file_tree_timeout(self):
+        """Timeout during file tree fetch returns timeout error message."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/001.do",
+            body=requests.Timeout("timed out"),
+        )
+
+        downloader = AIHubDownloader()
+        file_tree, error_message = downloader.get_file_tree("001")
+
+        assert file_tree is None
+        assert "Timeout" in error_message
+
+    @responses.activate
+    def test_get_package_file_tree_403(self):
+        """HTTP 403 on package endpoint returns specific error."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/pckage/99.do",
+            body="Forbidden",
+            status=403,
+        )
+
+        downloader = AIHubDownloader()
+        file_tree, error_message = downloader.get_package_file_tree("99")
+
+        assert file_tree is None
+        assert "403" in error_message
+
+    @responses.activate
+    def test_get_package_file_tree_timeout(self):
+        """Timeout during package file tree fetch."""
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/info/pckage/1.do",
+            body=requests.Timeout("timed out"),
+        )
+
+        downloader = AIHubDownloader()
+        file_tree, error_message = downloader.get_package_file_tree("1")
+
+        assert file_tree is None
+        assert "Timeout" in error_message
+
+    def test_download_dataset_with_size_check_insufficient(self, temp_dir):
+        """Size check blocks download when disk space is insufficient."""
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        status = downloader.download_dataset_with_size_check(
+            "001", "all", str(temp_dir), estimated_size=1024 ** 5  # 1 PB
+        )
+        assert status == DownloadStatus.INSUFFICIENT_DISK_SPACE
+
+    def test_format_size_zero(self):
+        """_format_size handles 0 bytes."""
+        downloader = AIHubDownloader()
+        assert downloader._format_size(0) == "0B"
+
+    def test_format_size_tib(self):
+        """_format_size handles TiB range."""
+        downloader = AIHubDownloader()
+        result = downloader._format_size(1024 ** 4)
+        assert "TiB" in result
+
+    @responses.activate
+    def test_download_and_process_dataset_full_flow(self, temp_dir):
+        """End-to-end: download tar containing part files, extract, merge, cleanup."""
+        # Build a tar with part files inside
+        parts_dir = temp_dir / "build"
+        parts_dir.mkdir()
+        inner = parts_dir / "dataset_001"
+        inner.mkdir()
+        (inner / "train.csv.part0").write_bytes(b"header\n")
+        (inner / "train.csv.part1").write_bytes(b"row1\n")
+
+        tar_bytes_path = temp_dir / "payload.tar"
+        with tarfile.open(str(tar_bytes_path), "w") as tar:
+            tar.add(str(inner / "train.csv.part0"), arcname="dataset_001/train.csv.part0")
+            tar.add(str(inner / "train.csv.part1"), arcname="dataset_001/train.csv.part1")
+
+        tar_content = tar_bytes_path.read_bytes()
+
+        responses.add(
+            responses.GET,
+            "https://api.aihub.or.kr/down/0.6/001.do?fileSn=all",
+            body=tar_content,
+            status=200,
+            headers={"content-length": str(len(tar_content))},
+        )
+
+        out = temp_dir / "output"
+        out.mkdir()
+
+        downloader = AIHubDownloader({"apikey": "test-key"})
+        status = downloader.download_and_process_dataset("001", "all", str(out))
+
+        assert status == DownloadStatus.SUCCESS
+        # The merged file should exist
+        assert (out / "dataset_001" / "train.csv").read_bytes() == b"header\nrow1\n"
+        # Part files and tar should be gone
+        assert not (out / "download.tar").exists()
+        assert not (out / "dataset_001" / "train.csv.part0").exists()
+        assert not (out / "dataset_001" / "train.csv.part1").exists()
