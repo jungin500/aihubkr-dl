@@ -13,13 +13,13 @@
 import csv
 import os
 import re
-import subprocess
-import tarfile
 import time
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
 import requests
+
+from .file_utils import extract_tar, merge_parts_in_subdirs
 
 
 class DownloadStatus(Enum):
@@ -229,11 +229,11 @@ class AIHubDownloader:
             if progress_callback:
                 progress_callback("Extracting files...", -1, -1, -1)
             tar_file = os.path.join(output_dir, "download.tar")
-            self._extract_tar(tar_file, output_dir)
+            extract_tar(tar_file, output_dir)
 
             if progress_callback:
                 progress_callback("Merging file parts...", -1, -1, -1)
-            self._merge_parts_in_subdirs(output_dir)
+            merge_parts_in_subdirs(output_dir)
             os.remove(tar_file)
             return DownloadStatus.SUCCESS
         else:
@@ -248,65 +248,17 @@ class AIHubDownloader:
 
         if download_status == DownloadStatus.SUCCESS:
             if progress_callback:
-                progress_callback("Extracting files...", -1, -1, -1)  # Indeterminate progress
+                progress_callback("Extracting files...", -1, -1, -1)
             tar_file = os.path.join(output_dir, "download.tar")
-
-            # Extract the tar file
-            self._extract_tar(tar_file, output_dir)
+            extract_tar(tar_file, output_dir)
 
             if progress_callback:
-                progress_callback("Merging file parts...", -1, -1, -1)  # Indeterminate progress
-            # Merge parts in all subdirectories
-            self._merge_parts_in_subdirs(output_dir)
-            # Clean up: remove the original tar file
+                progress_callback("Merging file parts...", -1, -1, -1)
+            merge_parts_in_subdirs(output_dir)
             os.remove(tar_file)
             return DownloadStatus.SUCCESS
         else:
             return download_status
-
-    def _extract_tar(self, tar_file: str, extract_dir: str):
-        """Extract the downloaded tar file."""
-        with tarfile.open(tar_file, "r") as tar:
-            tar.extractall(path=extract_dir)
-
-    def _merge_parts_in_subdirs(self, root_dir: str):
-        """Traverse all subdirectories and merge parts in the last child folders."""
-        for dirpath, dirnames, filenames in os.walk(root_dir):
-            if any(
-                re.search(r".*\.part[0-9]+", filename, re.IGNORECASE)
-                for filename in filenames
-            ):
-                self._merge_parts(dirpath)
-
-    def _merge_parts(self, target_dir: str):
-        """Merge all part files in the given directory."""
-        # Find all unique prefixes of part files
-        part_files = [
-            f
-            for f in os.listdir(target_dir)
-            if re.search(r".*\.part[0-9]+", f, re.IGNORECASE)
-        ]
-        prefixes = set(f.rsplit(".part", 1)[0] for f in part_files)
-
-        for prefix in prefixes:
-            # Log merging progress instead of printing
-            # print(f"Merging {prefix} in {target_dir}")
-
-            # Find all part files for this prefix and sort them
-            parts = sorted(
-                [f for f in part_files if f.startswith(prefix)],
-                key=lambda x: int(x.rsplit(".part", 1)[1]),
-            )
-
-            # Merge the parts
-            with open(os.path.join(target_dir, prefix), "wb") as outfile:
-                for part in parts:
-                    with open(os.path.join(target_dir, part), "rb") as infile:
-                        outfile.write(infile.read())
-
-            # Remove the part files
-            for part in parts:
-                os.remove(os.path.join(target_dir, part))
 
     def _check_disk_space(self, required_size: int, output_dir: str) -> bool:
         """Check if there's sufficient disk space for the download."""
@@ -417,10 +369,6 @@ class AIHubDownloader:
                 if resp.status_code == 502:
                     body = resp.text if hasattr(resp, 'text') else ""
                     if "승인" in body or "신청" in body:
-                        # Must submit the acceptance form before downloading
-                        form_url = f"https://aihub.or.kr/aihubdata/data/dwld.do?dataSetSn={dataset_key}"
-                        import webbrowser
-                        webbrowser.open(form_url)
                         return DownloadStatus.PRIVILEGE_ERROR
                     elif "인증" in body or "키" in body:
                         return DownloadStatus.AUTHENTICATION_ERROR

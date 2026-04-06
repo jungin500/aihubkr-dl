@@ -12,9 +12,7 @@
 import argparse
 import json
 import os
-import re
 import sys
-import tarfile
 from typing import Any, Dict
 
 from ..core.api_version import check_api_version
@@ -298,7 +296,7 @@ def download_dataset(
     print(f"File keys: {file_keys}")
     print(f"Output directory: {output_dir}")
 
-    # Check for available disk space before downloading
+    # Pre-download validation: fetch file tree and check disk space
     file_tree, error_message = downloader.get_file_tree(dataset_key)
     if error_message:
         print(f"Error: {error_message}")
@@ -316,15 +314,15 @@ def download_dataset(
     file_paths = [item for item in paths if item[1]]
     file_db = {}
 
-    min_total_size = 0
-    max_total_size = 0
     for row, (path, _, file_key, (file_display_size, file_min_size, file_max_size)) in enumerate(file_paths):
         file_db[file_key] = (path, file_display_size, file_min_size, file_max_size)
 
+    min_total_size = 0
+    max_total_size = 0
     for filekey in file_keys.split(","):
         if filekey == "all":
-            min_total_size = sum([file_db[key][2] for key in file_db])
-            max_total_size = sum([file_db[key][3] for key in file_db])
+            min_total_size = sum(file_db[key][2] for key in file_db)
+            max_total_size = sum(file_db[key][3] for key in file_db)
             break
         if filekey not in file_db:
             print(f"File key {filekey} not found.")
@@ -332,7 +330,6 @@ def download_dataset(
         min_total_size += file_db[filekey][2]
         max_total_size += file_db[filekey][3]
 
-    # Check for available disk space
     fstat = os.statvfs(output_dir)
     available_space = fstat.f_frsize * fstat.f_bavail
 
@@ -343,52 +340,16 @@ def download_dataset(
         print("Insufficient disk space.")
         return
 
-    # Use the new download method with size checking
-    download_status = downloader.download_dataset_with_size_check(
-        dataset_key, file_keys, output_dir, max_total_size
+    # Download, extract, merge, and clean up
+    status = downloader.download_and_process_dataset(
+        dataset_key, file_keys, output_dir
     )
-
-    if download_status == DownloadStatus.SUCCESS:
-        # Continue with processing if download was successful
-        tar_file = os.path.join(output_dir, "download.tar")
-
-        # Extract the tar file
-        with tarfile.open(tar_file, "r") as tar:
-            tar.extractall(path=output_dir)
-
-        print("Merging file parts...")
-        # Merge parts in all subdirectories
-        for dirpath, dirnames, filenames in os.walk(output_dir):
-            if any(re.search(r".*\.part[0-9]+", filename, re.IGNORECASE) for filename in filenames):
-                # Find all unique prefixes of part files
-                part_files = [f for f in filenames if re.search(r".*\.part[0-9]+", f, re.IGNORECASE)]
-                prefixes = set(f.rsplit(".part", 1)[0] for f in part_files)
-
-                for prefix in prefixes:
-                    print(f"Merging {prefix} in {dirpath}")
-                    parts = sorted([f for f in part_files if f.startswith(prefix)],
-                                   key=lambda x: int(x.rsplit(".part", 1)[1]))
-
-                    with open(os.path.join(dirpath, prefix), "wb") as outfile:
-                        for part in parts:
-                            with open(os.path.join(dirpath, part), "rb") as infile:
-                                outfile.write(infile.read())
-
-                    # Remove the part files
-                    for part in parts:
-                        os.remove(os.path.join(dirpath, part))
-
-        print("Merging completed.")
-        # Clean up: remove the original tar file
-        os.remove(tar_file)
-        status = DownloadStatus.SUCCESS
-    else:
-        status = download_status
 
     print(status.get_message())
 
     if status == DownloadStatus.PRIVILEGE_ERROR:
-        print("Please visit the AIHub website and accept the terms before downloading.")
+        form_url = f"https://aihub.or.kr/aihubdata/data/dwld.do?dataSetSn={dataset_key}"
+        print(f"Please visit {form_url} and accept the terms before downloading.")
     elif status == DownloadStatus.AUTHENTICATION_ERROR:
         print("Please check your API key and try again.")
     elif status == DownloadStatus.FILE_NOT_FOUND:
