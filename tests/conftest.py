@@ -182,11 +182,11 @@ def mock_config():
 
 @pytest.fixture(autouse=True)
 def setup_test_environment():
-    """Setup test environment variables."""
-    os.environ["AIHUB_APIKEY"] = "test-api-key-12345"
-
+    """Ensure clean environment between tests — no AIHUB_APIKEY set by default."""
+    saved = os.environ.pop("AIHUB_APIKEY", None)
     yield
-
-    # Cleanup
-    if "AIHUB_APIKEY" in os.environ:
+    # Restore or clean up
+    if saved is not None:
+        os.environ["AIHUB_APIKEY"] = saved
+    elif "AIHUB_APIKEY" in os.environ:
         del os.environ["AIHUB_APIKEY"]

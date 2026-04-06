@@ -867,9 +867,12 @@ class AIHubDownloaderGUI(QMainWindow):
         if status.is_success():
             QMessageBox.information(self, "Success", status.get_message())
         elif status == DownloadStatus.PRIVILEGE_ERROR:
+            dataset_key = self.dataset_key_input.text().strip()
+            form_url = f"https://aihub.or.kr/aihubdata/data/dwld.do?dataSetSn={dataset_key}"
+            webbrowser.open(form_url)
             QMessageBox.critical(self, "Privilege Error",
                                  f"{status.get_message()}\n"
-                                 "The browser should have opened automatically. Please accept the terms and try again.")
+                                 "The browser has been opened. Please accept the terms and try again.")
         elif status == DownloadStatus.AUTHENTICATION_ERROR:
             QMessageBox.critical(self, "Authentication Error",
                                  f"{status.get_message()}\n"

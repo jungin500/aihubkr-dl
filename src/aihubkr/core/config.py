@@ -1,4 +1,5 @@
 import base64
+import binascii
 import json
 import os
 
@@ -34,7 +35,7 @@ class AIHubConfig:
             for key in data.keys():
                 self.config_db[key] = base64.b64decode(data.get(key)).decode()
             return True
-        except (FileNotFoundError, json.JSONDecodeError) as e:
+        except (FileNotFoundError, json.JSONDecodeError, binascii.Error, UnicodeDecodeError):
             self.config_db = {}
             return False
 
