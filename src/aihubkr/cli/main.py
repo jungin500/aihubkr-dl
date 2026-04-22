@@ -21,6 +21,7 @@ from ..core.config import AIHubConfig
 from ..core.downloader import AIHubDownloader, DownloadStatus
 from ..core.filelist_parser import AIHubResponseParser, sizeof_fmt
 from prettytable import PrettyTable
+from tqdm import tqdm
 
 
 def parse_arguments() -> Dict[str, Any]:
@@ -340,10 +341,38 @@ def download_dataset(
         print("Insufficient disk space.")
         return
 
-    # Download, extract, merge, and clean up
-    status = downloader.download_and_process_dataset(
-        dataset_key, file_keys, output_dir
+    # Download, extract, merge, and clean up (with progress bar)
+    pbar = tqdm(
+        total=max_total_size,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc="Downloading",
+        dynamic_ncols=True,
     )
+    total_adjusted = [False]
+
+    def progress_cb(msg, pct, downloaded, speed):
+        if downloaded < 0:
+            # Phase transition (extract/merge): write above bar
+            pbar.write(f"  {msg}")
+            return
+        # Adjust total from actual Content-Length on first real tick
+        if pct > 0 and not total_adjusted[0]:
+            actual_total = int(downloaded * 100 / pct)
+            if actual_total != pbar.total:
+                pbar.total = actual_total
+                pbar.refresh()
+            total_adjusted[0] = True
+        pbar.n = downloaded
+        pbar.refresh()
+
+    try:
+        status = downloader.download_and_process_dataset(
+            dataset_key, file_keys, output_dir, progress_callback=progress_cb
+        )
+    finally:
+        pbar.close()
 
     print(status.get_message())
 
